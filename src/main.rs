@@ -1,82 +1,29 @@
-use bytemuck::{Pod, Zeroable};
+mod generated;
+
+use crate::generated::shader_bindings;
+use crate::generated::shader_bindings::shader::VertexInput;
+use genmesh::generators::IndexedPolygon;
+use genmesh::{generators, Triangulate, Vertices};
 use std::f64::consts;
 use std::sync::Arc;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::wgt::{CommandEncoderDescriptor, TextureViewDescriptor};
-use wgpu::{include_wgsl, InstanceDescriptor, SurfaceConfiguration};
+use wgpu::{InstanceDescriptor, SurfaceConfiguration};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
-    _pos: [f32; 4],
-    _tex_coord: [f32; 2],
-}
-
-fn vertex(pos: [i8; 3], tc: [i8; 2]) -> Vertex {
-    Vertex {
-        _pos: [pos[0] as f32, pos[1] as f32, pos[2] as f32, 1.0],
-        _tex_coord: [tc[0] as f32, tc[1] as f32],
-    }
-}
-
-fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
-    let vertex_data = [
-        // top (0, 0, 1)
-        vertex([-1, -1, 1], [0, 0]),
-        vertex([1, -1, 1], [1, 0]),
-        vertex([1, 1, 1], [1, 1]),
-        vertex([-1, 1, 1], [0, 1]),
-        // bottom (0, 0, -1)
-        vertex([-1, 1, -1], [1, 0]),
-        vertex([1, 1, -1], [0, 0]),
-        vertex([1, -1, -1], [0, 1]),
-        vertex([-1, -1, -1], [1, 1]),
-        // right (1, 0, 0)
-        vertex([1, -1, -1], [0, 0]),
-        vertex([1, 1, -1], [1, 0]),
-        vertex([1, 1, 1], [1, 1]),
-        vertex([1, -1, 1], [0, 1]),
-        // left (-1, 0, 0)
-        vertex([-1, -1, 1], [1, 0]),
-        vertex([-1, 1, 1], [0, 0]),
-        vertex([-1, 1, -1], [0, 1]),
-        vertex([-1, -1, -1], [1, 1]),
-        // front (0, 1, 0)
-        vertex([1, 1, -1], [1, 0]),
-        vertex([-1, 1, -1], [0, 0]),
-        vertex([-1, 1, 1], [0, 1]),
-        vertex([1, 1, 1], [1, 1]),
-        // back (0, -1, 0)
-        vertex([1, -1, 1], [0, 0]),
-        vertex([-1, -1, 1], [1, 0]),
-        vertex([-1, -1, -1], [1, 1]),
-        vertex([1, -1, -1], [0, 1]),
-    ];
-
-    let index_data: &[u16] = &[
-        0, 1, 2, 2, 3, 0, // top
-        4, 5, 6, 6, 7, 4, // bottom
-        8, 9, 10, 10, 11, 8, // right
-        12, 13, 14, 14, 15, 12, // left
-        16, 17, 18, 18, 19, 16, // front
-        20, 21, 22, 22, 23, 20, // back
-    ];
-
-    (vertex_data.to_vec(), index_data.to_vec())
-}
-
-fn camera_matrix(aspect_ratio: f64) -> glamx::DMat4 {
+fn camera_matrix(aspect_ratio: f64) -> glam::DMat4 {
     let projection =
-        glamx::dcamera::rh::proj::directx::perspective(consts::FRAC_PI_4, aspect_ratio, 1.0, 10.0);
-    let view = glamx::dcamera::rh::view::look_at_mat4(
-        glamx::DVec3::new(1.5, -5.0, 3.0),
-        glamx::DVec3::ZERO,
-        glamx::DVec3::Z,
+        glam::dcamera::rh::proj::directx::perspective(consts::FRAC_PI_4, aspect_ratio, 1.0, 10.0);
+
+    let view = glam::dcamera::rh::view::look_at_mat4(
+        glam::DVec3::new(1.5, -5.0, 3.0),
+        glam::DVec3::ZERO,
+        glam::DVec3::Z,
     );
+
     projection * view
 }
 
@@ -93,16 +40,17 @@ struct State {
     index_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     index_count: u32,
-    bind_group: wgpu::BindGroup,
+    bind_group: shader_bindings::shader::WgpuBindGroup0,
 }
 
 impl State {
     async fn new(event_loop: &ActiveEventLoop) -> anyhow::Result<Self> {
-        let instance = pollster::block_on(wgpu::util::new_instance_with_webgpu_detection(
+        let instance = wgpu::util::new_instance_with_webgpu_detection(
             InstanceDescriptor::new_with_display_handle_from_env(Box::new(
                 event_loop.owned_display_handle(),
             )),
-        ));
+        )
+        .await;
 
         let window = Arc::new(event_loop.create_window(WindowAttributes::default())?);
 
@@ -130,67 +78,54 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(64),
+        let pipeline_layout = shader_bindings::shader::create_pipeline_layout(&device);
+
+        let bind_group = shader_bindings::shader::WgpuBindGroup0::from_bindings(
+            &device,
+            shader_bindings::shader::WgpuBindGroup0Entries::new(
+                shader_bindings::shader::WgpuBindGroup0EntriesParams {
+                    transform: wgpu::BufferBinding {
+                        buffer: &uniform_buffer,
+                        offset: 0,
+                        size: None,
+                    },
                 },
-                count: None,
-            }],
-        });
+            ),
+        );
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        let shader = device.create_shader_module(include_wgsl!("shader.wgsl"));
+        let shader = shader_bindings::shader::create_shader_module_embed_source(&device);
+        let vertex_entry = shader_bindings::shader::vs_main_entry(wgpu::VertexStepMode::Vertex);
+        let fragment_entry = shader_bindings::shader::fs_main_entry([Some(surface_format.into())]);
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<Vertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x4,
-                        1 => Float32x2,
-                    ],
-                })],
-            },
+            vertex: shader_bindings::shader::vertex_state(&shader, &vertex_entry),
             primitive: Default::default(),
             depth_stencil: None,
             multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(surface_format.into())],
-            }),
+            fragment: Some(shader_bindings::shader::fragment_state(
+                &shader,
+                &fragment_entry,
+            )),
             multiview_mask: None,
             cache: None,
         });
 
-        let (vertices, indices) = create_vertices();
+        let cube = generators::Cube::new();
+        let vertices = cube
+            .clone()
+            .vertices()
+            .map(|vertex| VertexInput {
+                position: glam::Vec3::new(vertex.pos.x, vertex.pos.y, vertex.pos.z),
+                normal: Default::default(),
+            })
+            .collect::<Vec<_>>();
+        let indices = cube
+            .indexed_polygon_iter()
+            .triangulate()
+            .flat_map(|triangle| [triangle.x as u16, triangle.y as u16, triangle.z as u16])
+            .collect::<Vec<_>>();
 
         let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -237,7 +172,6 @@ impl State {
                 &SurfaceConfiguration {
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                     format: self.surface_format,
-                    color_space: wgpu::SurfaceColorSpace::Auto,
                     width,
                     height,
                     present_mode: wgpu::PresentMode::AutoVsync,
@@ -313,13 +247,13 @@ impl State {
                 renderpass.set_pipeline(&self.render_pipeline);
                 renderpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 renderpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                renderpass.set_bind_group(0, &self.bind_group, &[]);
+                self.bind_group.set(&mut renderpass);
                 renderpass.draw_indexed(0..self.index_count, 0, 0..1);
             }
 
             self.queue.submit(std::iter::once(encoder.finish()));
             self.window.pre_present_notify();
-            self.queue.present(surface_texture);
+            surface_texture.present();
         }
 
         Ok(())

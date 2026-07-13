@@ -1,2 +1,5 @@
 /target
 .idea
+src/generated/*
+!src/generated/
+!src/generated/mod.rs
