@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use wgpu::wgt::{CommandEncoderDescriptor, TextureViewDescriptor};
-use wgpu::{InstanceDescriptor, SurfaceConfiguration};
+use wgpu::{include_wgsl, InstanceDescriptor, SurfaceConfiguration};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -14,6 +14,7 @@ struct State {
     queue: wgpu::Queue,
     surface_format: wgpu::TextureFormat,
     surface: Option<wgpu::Surface<'static>>,
+    render_pipeline: wgpu::RenderPipeline,
 }
 
 impl State {
@@ -42,6 +43,30 @@ impl State {
         let surface_capabilities = temporary_surface.get_capabilities(&adapter);
         let surface_format = surface_capabilities.formats[0];
 
+        let shader = device.create_shader_module(include_wgsl!("shader.wgsl"));
+
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(surface_format.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Ok(Self {
             window,
             instance,
@@ -50,6 +75,7 @@ impl State {
             queue,
             surface_format,
             surface: None,
+            render_pipeline,
         })
     }
 
@@ -123,18 +149,20 @@ impl State {
                 .create_command_encoder(&CommandEncoderDescriptor::default());
 
             {
-                let renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &surface_view,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
                     ..Default::default()
                 });
+                renderpass.set_pipeline(&self.render_pipeline);
+                renderpass.draw(0..3, 0..1);
             }
 
             self.queue.submit(std::iter::once(encoder.finish()));
