@@ -5,6 +5,7 @@ struct VertexInput {
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
+    @location(0) normal: vec3<f32>,
 };
 
 @group(0)
@@ -17,14 +18,13 @@ fn vs_main(
 ) -> VertexOutput {
     var result: VertexOutput;
     result.position = transform * vec4<f32>(model.position, 1.0);
+    result.normal = model.normal;
     return result;
 }
 
-//@group(0)
-//@binding(1)
-//var r_color: texture_2d<u32>;
-
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    let light = normalize(vec3<f32>(0.3, -0.8, 0.5));
+    let diffuse = max(dot(vertex.normal, light), 0.2);
+    return vec4<f32>(diffuse, 0.0, 0.0, 1.0);
 }

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.103"
+bevy_mikktspace = "1.0.0"
 bytemuck = "1.25.1"
 encase = "0.12.0"
 exr = "1.74.2"

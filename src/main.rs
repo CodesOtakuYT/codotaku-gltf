@@ -2,7 +2,7 @@ mod generated;
 
 use crate::generated::shader_bindings;
 use crate::generated::shader_bindings::shader::VertexInput;
-use genmesh::generators::IndexedPolygon;
+use genmesh::generators::{IndexedPolygon, SharedVertex};
 use genmesh::{generators, Triangulate, Vertices};
 use std::f64::consts;
 use std::sync::Arc;
@@ -13,6 +13,25 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
+
+fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+}
 
 fn camera_matrix(aspect_ratio: f64) -> glam::DMat4 {
     let projection =
@@ -39,6 +58,7 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
+    depth_texture: Option<wgpu::TextureView>,
     index_count: u32,
     bind_group: shader_bindings::shader::WgpuBindGroup0,
 }
@@ -78,6 +98,8 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        let depth_texture = create_depth_texture(&device, window_width, window_height);
+
         let pipeline_layout = shader_bindings::shader::create_pipeline_layout(&device);
 
         let bind_group = shader_bindings::shader::WgpuBindGroup0::from_bindings(
@@ -101,8 +123,17 @@ impl State {
             label: None,
             layout: Some(&pipeline_layout),
             vertex: shader_bindings::shader::vertex_state(&shader, &vertex_entry),
-            primitive: Default::default(),
-            depth_stencil: None,
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
             multisample: Default::default(),
             fragment: Some(shader_bindings::shader::fragment_state(
                 &shader,
@@ -114,17 +145,17 @@ impl State {
 
         let cube = generators::Cube::new();
         let vertices = cube
-            .clone()
-            .vertices()
+            .shared_vertex_iter()
             .map(|vertex| VertexInput {
                 position: glam::Vec3::new(vertex.pos.x, vertex.pos.y, vertex.pos.z),
-                normal: Default::default(),
+                normal: glam::Vec3::new(vertex.normal.x, vertex.normal.y, vertex.normal.z),
             })
             .collect::<Vec<_>>();
         let indices = cube
             .indexed_polygon_iter()
             .triangulate()
-            .flat_map(|triangle| [triangle.x as u16, triangle.y as u16, triangle.z as u16])
+            .vertices()
+            .map(|idx| idx as u16)
             .collect::<Vec<_>>();
 
         let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -151,6 +182,7 @@ impl State {
             vertex_buffer,
             index_buffer,
             uniform_buffer,
+            depth_texture: Some(depth_texture),
             index_count: indices.len() as u32,
             bind_group,
         })
@@ -165,7 +197,7 @@ impl State {
         Ok(())
     }
 
-    fn resize(&self, width: u32, height: u32) {
+    fn resize(&mut self, width: u32, height: u32) {
         if let Some(surface) = &self.surface {
             surface.configure(
                 &self.device,
@@ -187,6 +219,7 @@ impl State {
                 0,
                 bytemuck::cast_slice(matrix.as_ref()),
             );
+            self.depth_texture = Some(create_depth_texture(&self.device, width, height));
         }
     }
 
@@ -242,6 +275,14 @@ impl State {
                             store: wgpu::StoreOp::Store,
                         },
                     })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: self.depth_texture.as_ref().unwrap(),
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
                     ..Default::default()
                 });
                 renderpass.set_pipeline(&self.render_pipeline);
@@ -285,7 +326,7 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(inner_size) => {
-                if let Some(state) = &self.state {
+                if let Some(state) = &mut self.state {
                     state.resize(inner_size.width, inner_size.height);
                 }
             }
